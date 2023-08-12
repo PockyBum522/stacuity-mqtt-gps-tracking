@@ -2,195 +2,278 @@
 #define INC_STACUITY_MQTT_GPS_TRACKING_MODEMMANAGER_H
 
 
-#include <Arduino.h>
-
 #define TINY_GSM_MODEM_SIM7000
 #define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
 
 #define SerialAT Serial1
 
-#include "TinyGsmClient.h"
-
-#define MODEM_UART_BAUD           115200
-#define MODEM_PIN_TX              27
-#define MODEM_PIN_RX              26
-#define MODEM_PWR_PIN             4
-
 // See all AT commands, if wanted
-// #define DUMP_AT_COMMANDS
+#define DUMP_AT_COMMANDS
 
 // set GSM PIN, if any
 #define GSM_PIN ""
 
 // Your GPRS credentials, if any
-const char apn[]  = "";     //SET TO YOUR APN
+const char apn[]  = "stacuity.flex";     //SET TO YOUR APN
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
-#ifdef DUMP_AT_COMMANDS
+#include <TinyGsmClient.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Ticker.h>
+
+#ifdef DUMP_AT_COMMANDS  // if enabled it requires the streamDebugger lib
     #include <StreamDebugger.h>
-    StreamDebugger debugger(SerialAT, SerialMon);
+    #include "HttpClient.h"
+
+    StreamDebugger debugger(SerialAT, Serial);
     TinyGsm modem(debugger);
 #else
     TinyGsm modem(SerialAT);
 #endif
 
+TinyGsmClient client(modem);
+
+#define UART_BAUD   115200
+#define PIN_DTR     25
+#define PIN_TX      27
+#define PIN_RX      26
+#define PWR_PIN     4
+
+int counter, lastIndex, numberOfPieces = 24;
+String pieces[24], input;
+
 class ModemManager
 {
 public:
-    static void modemPowerOn()
+    static void powerOnModem()
     {
-        pinMode(MODEM_PWR_PIN, OUTPUT);
+        pinMode(PWR_PIN, OUTPUT);
+        digitalWrite(PWR_PIN, HIGH);
+        delay(300);
+        digitalWrite(PWR_PIN, LOW);
 
-        digitalWrite(MODEM_PWR_PIN, LOW);
+        Serial.println("\nWait...");
+
         delay(1000);
-        digitalWrite(MODEM_PWR_PIN, HIGH);
-    }
 
-    static void modemPowerOff()
-    {
-        pinMode(MODEM_PWR_PIN, OUTPUT);
+        SerialAT.begin(UART_BAUD, SERIAL_8N1, PIN_RX, PIN_TX);
 
-        digitalWrite(MODEM_PWR_PIN, LOW);
-        delay(1500);
-        digitalWrite(MODEM_PWR_PIN, HIGH);
-    }
-
-    static void modemRestart()
-    {
-        modemPowerOff();
-        delay(1000);
-        modemPowerOn();
-    }
-
-    static void beginModemConnection() {
-        SerialAT.begin(MODEM_UART_BAUD, SERIAL_8N1, MODEM_PIN_RX, MODEM_PIN_TX);
-
-        Serial.println("/**********************************************************/");
-        Serial.println("To initialize the network test, please make sure your LTE ");
-        Serial.println("antenna has been connected to the SIM interface on the board.");
-        Serial.println("/**********************************************************/\n\n");
-    }
-
-    static void connectToCellNetwork(const int ledPin)
-    {
-        String res;
-
-        Serial.println("========INIT========");
-
-        if (!modem.init())
-        {
-            ModemManager::modemRestart();
-
-            for (int i = 0; i < 4; i++)
-            {
-                delay(500);
-                yield();
-            }
-
+        // Restart takes quite some time
+        // To skip it, call init() instead of restart()
+        Serial.println("Initializing modem...");
+        if (!modem.restart()) {
             Serial.println("Failed to restart modem, attempting to continue without restarting");
-            return;
         }
+    }
 
-        Serial.println("========SIMCOMATI======");
-        modem.sendAT("+SIMCOMATI");
-        modem.waitResponse(1000L, res);
-
-        res.replace(GSM_NL "OK" GSM_NL, "");
-        Serial.println(res);
-
-        res = "";
-        Serial.println("=======================");
-        Serial.println("=====Preferred mode selection=====");
-
-        modem.sendAT("+CNMP?");
-
-        if (modem.waitResponse(1000L, res) == 1)
-        {
-            res.replace(GSM_NL "OK" GSM_NL, "");
-            Serial.println(res);
+    static void restartModemAndConnect()
+    {
+// Restart takes quite some time. To skip it, call init() instead of restart()
+        Serial.println("Initializing modem...");
+        if (!modem.init()) {
+            Serial.println("Failed to restart modem, attempting to continue without restarting");
         }
-
-        res = "";
-        Serial.println("=======================");
-        Serial.println("=====Preferred selection between CAT-M and NB-IoT=====");
-
-        modem.sendAT("+CMNB?");
-
-        if (modem.waitResponse(1000L, res) == 1)
-        {
-            res.replace(GSM_NL "OK" GSM_NL, "");
-            Serial.println(res);
-        }
-        res = "";
-        Serial.println("=======================");
 
         String name = modem.getModemName();
+        delay(500);
         Serial.println("Modem Name: " + name);
 
         String modemInfo = modem.getModemInfo();
+        delay(500);
         Serial.println("Modem Info: " + modemInfo);
 
-        for (int i = 0; i <= 4; i++)
-        {
-            uint8_t network[] = {
-                    2,  /*Automatic*/
-                    13, /*GSM only*/
-                    38, /*LTE only*/
-                    51  /*GSM and LTE only*/
-            };
 
-            Serial.printf("Try %d method\n", network[i]);
-            modem.setNetworkMode(network[i]);
+        // Unlock your SIM card with a PIN if needed
+        if ( GSM_PIN && modem.getSimStatus() != 3 ) {
+            modem.simUnlock(GSM_PIN);
+        }
+        modem.sendAT("+CFUN=0 ");
+        if (modem.waitResponse(10000L) != 1) {
+            DBG(" +CFUN=0  false ");
+        }
+        delay(200);
 
-            delay(3000);
+        /*
+          2 Automatic
+          13 GSM only
+          38 LTE only
+          51 GSM and LTE only
+        * * * */
+        String res;
+        // CHANGE NETWORK MODE, IF NEEDED
+        res = modem.setNetworkMode(2);
+        if (res != "1") {
+            DBG("setNetworkMode  false ");
+            return ;
+        }
+        delay(200);
 
-            bool isConnected = false;
-            int tryCount = 60;
+        /*
+          1 CAT-M
+          2 NB-Iot
+          3 CAT-M and NB-IoT
+        * * */
+        // CHANGE PREFERRED MODE, IF NEEDED
+        res = modem.setPreferredMode(1);
+        if (res != "1") {
+            DBG("setPreferredMode  false ");
+            return ;
+        }
+        delay(200);
 
-            while (tryCount--)
-            {
-                int16_t signal =  modem.getSignalQuality();
+        /*AT+CBANDCFG=<mode>,<band>[,<band>…]
+         * <mode> "CAT-M"   "NB-IOT"
+         * <band>  The value of <band> must is in the band list of getting from  AT+CBANDCFG=?
+         * For example, my SIM card carrier "NB-iot" supports B8.  I will configure +CBANDCFG= "Nb-iot ",8
+         */
+        /* modem.sendAT("+CBANDCFG=\"NB-IOT\",8 ");*/
 
-                Serial.print("Signal: ");
-                Serial.print(signal);
-                Serial.print(" ");
-                Serial.print("isNetworkConnected: ");
+        /* if (modem.waitResponse(10000L) != 1) {
+             DBG(" +CBANDCFG=\"NB-IOT\" ");
+         }*/
+        delay(200);
 
-                isConnected = modem.isNetworkConnected();
+        modem.sendAT("+CFUN=1 ");
+        if (modem.waitResponse(10000L) != 1) {
+            DBG(" +CFUN=1  false ");
+        }
+        delay(200);
 
-                Serial.println( isConnected ? "CONNECT" : "NO CONNECT");
-
-                if (isConnected)
-                {
-                    break;
+        SerialAT.println("AT+CGDCONT?");
+        delay(500);
+        if (SerialAT.available()) {
+            input = SerialAT.readString();
+            for (int i = 0; i < input.length(); i++) {
+                if (input.substring(i, i + 1) == "\n") {
+                    pieces[counter] = input.substring(lastIndex, i);
+                    lastIndex = i + 1;
+                    counter++;
                 }
-
-                delay(1000);
-                digitalWrite(ledPin, !digitalRead(ledPin));
+                if (i == input.length() - 1) {
+                    pieces[counter] = input.substring(lastIndex, i);
+                }
             }
+            // Reset for reuse
+            input = "";
+            counter = 0;
+            lastIndex = 0;
 
-            if (isConnected)
-            {
-                break;
+            for ( int y = 0; y < numberOfPieces; y++) {
+                for ( int x = 0; x < pieces[y].length(); x++) {
+                    char c = pieces[y][x];  //gets one byte from buffer
+                    if (c == ',') {
+                        if (input.indexOf(": ") >= 0) {
+                            String data = input.substring((input.indexOf(": ") + 1));
+                            if ( data.toInt() > 0 && data.toInt() < 25) {
+                                modem.sendAT("+CGDCONT=" + String(data.toInt()) + ",\"IP\",\"" + String(apn) + "\",\"0.0.0.0\",0,0,0,0");
+                            }
+                            input = "";
+                            break;
+                        }
+                        // Reset for reuse
+                        input = "";
+                    } else {
+                        input += c;
+                    }
+                }
             }
+        } else {
+            Serial.println("Failed to get PDP!");
         }
 
-        digitalWrite(ledPin, HIGH);
+        Serial.println("\n\n\nWaiting for network...");
+        if (!modem.waitForNetwork()) {
+            delay(10000);
+            return;
+        }
 
-        Serial.println();
-        Serial.println("Device is connected .");
-        Serial.println();
+        if (modem.isNetworkConnected()) {
+            Serial.println("Network connected");
+        }
 
-        Serial.println("=====Inquiring UE system information=====");
+        // --------TESTING GPRS--------
+        Serial.println("\n---Starting GPRS TEST---\n");
+        Serial.println("Connecting to: " + String(apn));
+        if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+            delay(10000);
+            return;
+        }
+    }
 
-        modem.sendAT("+CPSI?");
+    static void printGprsConnectionInfoToSerial()
+    {
+        Serial.print("GPRS status: ");
 
-        if (modem.waitResponse(1000L, res) == 1)
+        if (modem.isGprsConnected())
         {
-            res.replace(GSM_NL "OK" GSM_NL, "");
-            Serial.println(res);
+            Serial.println("connected");
         }
+        else
+        {
+            Serial.println("not connected");
+        }
+
+        String ccid = modem.getSimCCID();
+        Serial.println("CCID: " + ccid);
+
+        String imei = modem.getIMEI();
+        Serial.println("IMEI: " + imei);
+
+        String cop = modem.getOperator();
+        Serial.println("Operator: " + cop);
+
+        IPAddress local = modem.localIP();
+        Serial.println("Local IP: " + String(local));
+
+        int csq = modem.getSignalQuality();
+        Serial.println("Signal quality: " + String(csq));
+
+        SerialAT.println("AT+CPSI?");     //Get connection type and band
+
+        delay(500);
+
+        if (SerialAT.available())
+        {
+            String r = SerialAT.readString();
+            Serial.println(r);
+        }
+
+    }
+
+    static void disconnectGprs()
+    {
+        Serial.println("\n---End of GPRS TEST---\n");
+
+        modem.gprsDisconnect();
+
+        if (!modem.isGprsConnected())
+        {
+            Serial.println("GPRS disconnected");
+        }
+        else
+        {
+            Serial.println("GPRS disconnect: Failed.");
+        }
+    }
+
+    static void powerOffModem()
+    {
+
+//
+//    // --------TESTING POWER DONW--------
+//
+//    // Try to power-off (modem may decide to restart automatically)
+//    // To turn off modem completely, please use Reset/Enable pins
+//    modem.sendAT("+CPOWD=1");
+//    if (modem.waitResponse(10000L) != 1) {
+//        DBG("+CPOWD=1");
+//    }
+//    // The following command does the same as the previous lines
+//    modem.poweroff();
+//    Serial.println("Poweroff.");
+//
     }
 };
 

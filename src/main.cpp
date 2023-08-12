@@ -1,52 +1,50 @@
 #include <Arduino.h>
 #include "libraries/Hardware/ModemManager.h"
 #include "libraries/Hardware/SdCardManager.h"
+#include "libraries/HttpConnection.h"
+#include "libraries/Hardware/GpsManager.h"
 #include <elapsedMillis.h>
 
-const int LED_PIN = 12;
-
 elapsedMillis modemInitializationDelay;
+
+#define LED_PIN     12
 
 void setup()
 {
     Serial.begin(115200);
 
+    delay(10);
+
     // Set LED OFF
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);
 
-    ModemManager::modemPowerOn();
-
     SdCardManager::sdCardSetup();
 
-    ModemManager::beginModemConnection();
-
-    Serial.println("Initialization done! Waiting ten seconds for modem init before continuing...");
+    ModemManager::powerOnModem();
 }
 
 void loop()
 {
-    // Don't start doing anything in loop() until 10 seconds in, giving the modem time to come up
-    if (modemInitializationDelay < 10000) return;
+    ModemManager::restartModemAndConnect();
 
-    ModemManager::connectToCellNetwork(LED_PIN);
+    ModemManager::printGprsConnectionInfoToSerial();
 
-    
-//    Serial.println("/**********************************************************/");
-//    Serial.println("After the network test is complete, please enter the  ");
-//    Serial.println("AT command in the serial terminal.");
-//    Serial.println("/**********************************************************/\n\n");
-//
-//    while (true)
-//    {
-//        while (SerialAT.available())
-//        {
-//            Serial.write(SerialAT.read());
-//        }
-//
-//        while (Serial.available())
-//        {
-//            SerialAT.write(Serial.read());
-//        }
-//    }
+    HttpConnection::makeGetRequest();
+
+    ModemManager::disconnectGprs();
+
+    // These are probably messed up and should be thoroughly checked for bugs and issues when enabled
+    // GpsManager::initializeGps();
+    // GpsManager::printGpsDataForever();
+    // GpsManager::powerOffGps();
+
+    ModemManager::powerOffModem();
+
+    // Halt
+    while (true)
+    {
+        delay(400);
+        yield();
+    }
 }
