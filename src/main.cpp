@@ -9,6 +9,7 @@ elapsedMillis modemInitializationDelay;
 
 #define LED_PIN     12
 
+
 void setup()
 {
     Serial.begin(115200);
@@ -30,7 +31,10 @@ void loop()
 
     ModemManager::printGprsConnectionInfoToSerial();
 
-    HttpConnection::makeGetRequest();
+    //HttpConnection::makeGetRequest();
+    HttpConnection::makeSslGetRequest();
+
+    Serial.println("About to start: ModemManager::disconnectGprs();");
 
     ModemManager::disconnectGprs();
 

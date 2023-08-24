@@ -2,7 +2,7 @@
 #define INC_STACUITY_MQTT_GPS_TRACKING_MODEMMANAGER_H
 
 
-#define TINY_GSM_MODEM_SIM7000
+#define TINY_GSM_MODEM_SIM7000SSL
 #define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
 
 #define SerialAT Serial1
@@ -33,10 +33,9 @@ const char gprsPass[] = "";
     TinyGsm modem(SerialAT);
 #endif
 
-TinyGsmClient client(modem);
+TinyGsmClientSecure client(modem);
 
 #define UART_BAUD   115200
-#define PIN_DTR     25
 #define PIN_TX      27
 #define PIN_RX      26
 #define PWR_PIN     4
